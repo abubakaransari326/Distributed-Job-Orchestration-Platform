@@ -20,3 +20,6 @@ replay_pid*
 # JetBrains (IntelliJ)
 .idea/
 *.iml
+
+# Environment files
+.env
