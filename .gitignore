@@ -1,0 +1,22 @@
+# Maven
+target/
+pom.xml.tag
+pom.xml.releaseBackup
+pom.xml.versionsBackup
+release.properties
+dependency-reduced-pom.xml
+
+# Java / JVM
+*.class
+hs_err_pid*
+replay_pid*
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+
+# JetBrains (IntelliJ)
+.idea/
+*.iml
