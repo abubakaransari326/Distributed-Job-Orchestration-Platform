@@ -1,7 +1,9 @@
 package com.distributedjob.api.job;
 
+import com.distributedjob.api.kafka.JobProducer;
 import com.distributedjob.api.job.dto.CreateJobRequest;
 import com.distributedjob.api.job.dto.JobResponse;
+import com.distributedjob.common.JobMessage;
 import com.distributedjob.common.JobStatus;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -14,9 +16,11 @@ import static org.springframework.http.HttpStatus.NOT_FOUND;
 public class JobService {
 
     private final JobRepository jobRepository;
+    private final JobProducer jobProducer;
 
-    public JobService(JobRepository jobRepository) {
+    public JobService(JobRepository jobRepository, JobProducer jobProducer) {
         this.jobRepository = jobRepository;
+        this.jobProducer = jobProducer;
     }
 
     public JobResponse createJob(CreateJobRequest request) {
@@ -37,6 +41,13 @@ public class JobService {
         entity.setRetries(0);
 
         JobEntity saved = jobRepository.save(entity);
+
+        JobMessage message = new JobMessage(saved.getId(), saved.getType(), saved.getPayloadJson());
+        jobProducer.publish(message);
+
+        saved.setStatus(JobStatus.QUEUED);
+        saved = jobRepository.save(saved);
+
         return toResponse(saved);
     }
 
