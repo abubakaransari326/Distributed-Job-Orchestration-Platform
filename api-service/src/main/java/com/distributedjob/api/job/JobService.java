@@ -58,12 +58,14 @@ public class JobService {
         JobEntity saved = jobRepository.save(entity);
         log.info("Job created jobId={} type={} status={}", saved.getId(), saved.getType(), saved.getStatus());
 
-        JobMessage message = new JobMessage(saved.getId(), saved.getType(), saved.getPayloadJson());
-        jobProducer.publish(message);
-
+        // Persist QUEUED before publishing so workers never observe PENDING for an already-enqueued message.
         saved.setStatus(JobStatus.QUEUED);
         saved = jobRepository.save(saved);
-        log.info("Job enqueued to Kafka jobId={} status={}", saved.getId(), saved.getStatus());
+        log.info("Job marked QUEUED before Kafka publish jobId={}", saved.getId());
+
+        JobMessage message = new JobMessage(saved.getId(), saved.getType(), saved.getPayloadJson());
+        jobProducer.publish(message);
+        log.info("Job message published jobId={} status={}", saved.getId(), saved.getStatus());
 
         return toResponse(saved);
     }
@@ -95,12 +97,13 @@ public class JobService {
         }
 
         log.info("Retry requested jobId={} retriesBefore={}", id, entity.getRetries());
-        JobMessage message = new JobMessage(entity.getId(), entity.getType(), entity.getPayloadJson());
-        jobProducer.publish(message);
-
         entity.setStatus(JobStatus.QUEUED);
         entity.setRetries(entity.getRetries() + 1);
         JobEntity saved = jobRepository.save(entity);
+        log.info("Job marked QUEUED before Kafka publish jobId={} retries={}", saved.getId(), saved.getRetries());
+
+        JobMessage message = new JobMessage(saved.getId(), saved.getType(), saved.getPayloadJson());
+        jobProducer.publish(message);
         log.info("Job re-queued after retry jobId={} retries={} status={}", saved.getId(), saved.getRetries(), saved.getStatus());
 
         return toResponse(saved);

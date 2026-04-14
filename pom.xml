@@ -22,6 +22,7 @@
     <modules>
         <module>common-lib</module>
         <module>api-service</module>
+        <module>worker-service</module>
     </modules>
 
     <properties>

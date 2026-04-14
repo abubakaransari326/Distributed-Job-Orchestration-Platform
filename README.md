@@ -1,15 +1,16 @@
 # Distributed Job Orchestration Platform
 
-A learning-oriented backend that models how SaaS-style platforms run **asynchronous jobs**: REST APIs, PostgreSQL for state, Apache Kafka for work queues, and clear job lifecycle handling (including retries and external callbacks).
+A learning-oriented backend that models how SaaS-style platforms run **asynchronous jobs**: REST APIs, PostgreSQL for durable state, Apache Kafka for work distribution, and a separate **worker** process that executes jobs and updates lifecycle (including external webhooks and callbacks).
 
 ## Features
 
-- **Job lifecycle** — States include `PENDING`, `QUEUED`, `RUNNING`, `COMPLETED`, and `FAILED`.
-- **Job types** — `EMAIL`, `REPORT`, and `EXTERNAL` (internal simulation vs outbound HTTP + callback).
-- **API service** — Submit jobs, fetch status, retry failed jobs, and accept partner callbacks.
-- **Kafka** — Jobs are published to a `jobs` topic; a dead-letter topic name is reserved for later use.
-- **PostgreSQL** — Durable job records; schema managed with **Flyway** migrations.
-- **Docker Compose** — Local PostgreSQL, ZooKeeper, and Kafka for development.
+- **Job lifecycle** — `PENDING`, `QUEUED`, `RUNNING`, `COMPLETED`, `FAILED`.
+- **Job types** — `EMAIL` and `REPORT` (handled inside the worker), `EXTERNAL` (outbound HTTP to a partner URL, then completion via `POST /jobs/callback`).
+- **API service** — Create jobs, read status, retry failed jobs, accept external callbacks.
+- **Worker service** — Kafka consumer; claims `QUEUED` jobs, runs handlers, writes status back to the **same** Postgres database as the API.
+- **Kafka** — Work is published to the `jobs` topic (`jobs-dlq` is reserved for future dead-letter use).
+- **PostgreSQL** — Single source of truth for job rows; schema owned by **Flyway** in `api-service` (worker validates only).
+- **Docker Compose** — Local Postgres (host **5433**), ZooKeeper, and Kafka.
 
 ## Architecture (high level)
 
@@ -18,85 +19,93 @@ Client  →  API (REST)  →  PostgreSQL
                 ↓
             Kafka (jobs topic)
                 ↓
-         Worker service (planned)  →  handlers, DLQ, external calls
+         Worker service  →  EMAIL / REPORT / EXTERNAL handlers
 ```
 
-The **worker** module is the next major piece: it will consume from Kafka, execute handlers, and update job status in the database.
+The API persists jobs and enqueues work **only after** the row is `QUEUED`, so the worker never processes a Kafka message for a job that is still `PENDING` in the database.
 
 ## Tech stack
 
-| Area        | Choice |
-|------------|--------|
-| Language   | Java 17+ |
-| Framework  | Spring Boot 3.x |
+| Area         | Choice |
+|-------------|--------|
+| Language    | Java 17+ |
+| Framework   | Spring Boot 3.x |
 | Persistence | Spring Data JPA, PostgreSQL |
-| Messaging  | Spring Kafka, Apache Kafka |
-| Migrations | Flyway |
-| Build      | Maven (multi-module) |
-| Containers | Docker, Docker Compose |
+| Messaging   | Spring Kafka, Apache Kafka |
+| Migrations  | Flyway (in `api-service`) |
+| Build       | Maven (multi-module) |
+| Containers  | Docker, Docker Compose |
 
 ## Repository layout
 
 ```text
 ├── common-lib/          # Shared enums, Kafka topic names, JobMessage DTO
-├── api-service/       # REST API, Kafka producer, Flyway migrations
-├── docker-compose.yml # Postgres (host port 5433), ZooKeeper, Kafka
-├── pom.xml            # Parent POM
-└── .env.example       # Template for local environment variables (copy to .env)
+├── api-service/         # REST API, Kafka producer, Flyway migrations
+├── worker-service/      # Kafka consumer + job execution (same DB as API)
+├── scripts/             # Manual E2E: e2e-smoke.sh
+├── docker-compose.yml   # Postgres (5433), ZooKeeper, Kafka
+├── pom.xml              # Parent POM
+└── .env.example         # Copy to .env for local secrets / DB credentials
 ```
 
 ## Prerequisites
 
 - JDK 17+
 - Maven 3.9+
-- Docker Desktop (or Docker Engine + Compose) for infrastructure
+- Docker Desktop (or Docker Engine + Compose) for local infrastructure
 
 ## Quick start
 
 ### 1. Configuration
 
-Copy the environment template and edit values for your machine (never commit real secrets):
-
 ```bash
 cp .env.example .env
 ```
 
-Keep `.env` out of version control; it is listed in `.gitignore`.
+Edit `.env` for your machine. Keep it out of version control.
 
 ### 2. Start infrastructure
-
-From the repository root:
 
 ```bash
 docker compose up -d postgres zookeeper kafka
 docker compose ps
 ```
 
-PostgreSQL is exposed on **host port `5433`** so it can run alongside another PostgreSQL instance on the default port `5432`.
+Postgres listens on **host port 5433** (inside the container it is still `5432`).
 
-### 3. Build the project
+### 3. Build and test
+
+From the repository root:
 
 ```bash
-mvn -N install
-mvn -pl common-lib install
-mvn compile
+mvn clean verify
 ```
+
+This compiles all modules and runs **unit tests** (including the worker’s `JobExecutionService` tests).
 
 ### 4. Run the API
 
-Either run `com.distributedjob.api.ApiServiceApplication` from your IDE, or:
+IDE: `com.distributedjob.api.ApiServiceApplication`, or:
 
 ```bash
 mvn -pl api-service spring-boot:run
 ```
 
-Ensure the same environment variables you use for the database (and optional callback secret) are available to the process—IDE run configuration or `source .env` in the shell before `mvn`, depending on your workflow.
+Use the same `POSTGRES_*` (and optional `CALLBACK_SECRET`) as in Compose / `.env` — e.g. `source .env` before `mvn` if you rely on env vars.
 
-Default HTTP port: **8080**.
+Default port: **8080**. Settings: `api-service/src/main/resources/application.yml`.
 
-### 5. Smoke test
+### 5. Run the worker
 
-Create a job (example body shape):
+IDE: `com.distributedjob.worker.WorkerServiceApplication`, or:
+
+```bash
+mvn -pl worker-service spring-boot:run
+```
+
+Use the **same** database credentials and Kafka bootstrap as the API (`localhost:9092` with the provided Compose file). Default port: **8081**. Settings: `worker-service/src/main/resources/application.yml` (Flyway is **disabled** in the worker; migrations run from the API).
+
+### 6. Try a single job (Postman or curl)
 
 ```http
 POST /jobs
@@ -108,47 +117,58 @@ Content-Type: application/json
 }
 ```
 
-Then `GET /jobs/{id}` using the returned `id`.
+Then `GET /jobs/{id}` with the returned `id`. With both services up, an `EMAIL` job should reach `COMPLETED` after the worker consumes the message.
+
+### 7. Manual E2E script (all job types)
+
+With Compose + **api-service** + **worker-service** running:
+
+```bash
+bash scripts/e2e-smoke.sh
+```
+
+| Variable        | Purpose |
+|----------------|---------|
+| `API_URL`       | API base URL (default `http://127.0.0.1:8080`) |
+| `MAX_WAIT_SEC`  | Poll timeout per step (default `60`) |
+| `WEBHOOK_URL`   | URL the worker POSTs to for `EXTERNAL` jobs (default `https://httpbin.org/post`; worker needs outbound HTTPS) |
+| `CALLBACK_SECRET` | If set on the API (`job.callback.secret`), export the same value so `/jobs/callback` succeeds |
+
+The script runs **EMAIL**, **REPORT**, **EXTERNAL** (callback `COMPLETED`), and **EXTERNAL** (callback `FAILED`).
 
 ## HTTP API (overview)
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| `POST` | `/jobs` | Create a job; persists then enqueues to Kafka when the broker is available |
+| `POST` | `/jobs` | Create job: persist `PENDING` → `QUEUED`, **then** publish to Kafka |
 | `GET` | `/jobs/{id}` | Read job by UUID |
-| `POST` | `/jobs/{id}/retry` | Re-queue a **failed** job |
-| `POST` | `/jobs/callback` | External completion for **EXTERNAL** jobs in **RUNNING** state |
+| `POST` | `/jobs/{id}/retry` | Re-queue a **failed** job (increments retries, publishes after `QUEUED` is saved) |
+| `POST` | `/jobs/callback` | Partner completion for **EXTERNAL** jobs in **RUNNING** (`COMPLETED` or `FAILED`) |
 
-Callback requests may require header `X-Callback-Secret` when a callback secret is configured—see configuration below.
-
-Errors are returned as **RFC 7807-style** problem details where applicable.
+If `job.callback.secret` is set, send header `X-Callback-Secret` on `/jobs/callback`.
 
 ## Configuration
 
-Application settings are in `api-service/src/main/resources/application.yml`. Sensitive values should come from the environment, not from committed files.
+| Location | Notes |
+|----------|--------|
+| `api-service/src/main/resources/application.yml` | Datasource, Kafka producer, `job.callback.secret` |
+| `worker-service/src/main/resources/application.yml` | Datasource, Kafka consumer, webhook timeouts |
 
-Typical variables (names only—set values locally):
-
-| Variable | Role |
-|----------|------|
-| `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD` | PostgreSQL connection (aligned with Docker Compose) |
-| `CALLBACK_SECRET` | Optional shared secret for `X-Callback-Secret` on `/jobs/callback`; leave unset for local-only experiments |
+Environment variables commonly mirror Docker Compose (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `CALLBACK_SECRET`).
 
 Kafka bootstrap defaults to `localhost:9092` for local Compose.
 
 ## Database migrations
 
-Flyway scripts live under `api-service/src/main/resources/db/migration/`. Hibernate is set to **validate** the schema against the entities—DDL is owned by migrations, not auto-update.
-
-If you introduce Flyway after tables already existed without Flyway history, you may need a one-time clean baseline (empty DB or manual alignment). Fresh Compose volumes usually avoid that.
+Flyway SQL lives under `api-service/src/main/resources/db/migration/`. Hibernate uses **validate**; DDL is not auto-generated in production paths.
 
 ## Logging
 
-The `com.distributedjob` logger is configured for **DEBUG** in `application.yml` to simplify troubleshooting; tune levels per package in the same file for quieter output.
+`com.distributedjob` is set to **DEBUG** in the bundled `application.yml` files for easier local tracing; tighten per package as needed.
 
 ## Roadmap
 
-- **Worker service** — Kafka consumer, handler routing, retries, DLQ, external job execution
+- **Worker hardening** — DLQ publishing, richer error/detail in DB, timeouts/retries policy for `EXTERNAL`
 - **Optional** — Metrics, Redis, dashboard UI
 
 ## License

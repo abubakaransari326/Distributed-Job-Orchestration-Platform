@@ -1,0 +1,59 @@
+spring:
+  application:
+    name: worker-service
+
+  # Schema is owned by api-service Flyway migrations; worker uses the same database only.
+  flyway:
+    enabled: false
+
+  datasource:
+    url: jdbc:postgresql://localhost:5433/${POSTGRES_DB:job_platform}
+    username: ${POSTGRES_USER:job_user}
+    password: ${POSTGRES_PASSWORD:job_password}
+    driver-class-name: org.postgresql.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  kafka:
+    bootstrap-servers: localhost:9092
+    consumer:
+      group-id: worker-service
+      auto-offset-reset: earliest
+      enable-auto-commit: false
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.distributedjob.common
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.distributedjob.common.JobMessage
+
+server:
+  port: 8081
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  pattern:
+    console: "%d{yyyy-MM-dd'T'HH:mm:ss.SSSXXX} %-5level [%thread] %logger{36} - %msg%n"
+  level:
+    root: INFO
+    com.distributedjob: DEBUG
+    org.apache.kafka.clients: WARN
+    org.apache.kafka.common.network: WARN
+
+# Outbound HTTP for EXTERNAL jobs (webhook invocation)
+job:
+  worker:
+    webhook:
+      connect-timeout-ms: 5000
+      read-timeout-ms: 15000
