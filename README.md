@@ -1,6 +1,6 @@
 # Distributed Job Orchestration Platform
 
-A learning-oriented backend that models how SaaS-style platforms run **asynchronous jobs**: REST APIs, PostgreSQL for durable state, Apache Kafka for work distribution, and a separate **worker** process that executes jobs and updates lifecycle (including external webhooks and callbacks).
+A distributed job orchestration platform that models real-world asynchronous processing in SaaS and fintech systems: REST APIs, PostgreSQL for durable state, Apache Kafka for work distribution, and a separate worker process that executes jobs and updates lifecycle (including external webhooks and callbacks).
 
 ## Features
 
@@ -12,17 +12,91 @@ A learning-oriented backend that models how SaaS-style platforms run **asynchron
 - **PostgreSQL** — Single source of truth for job rows; schema owned by **Flyway** in `api-service` (worker validates only).
 - **Docker Compose** — Local Postgres (host **5433**), ZooKeeper, and Kafka.
 
-## Architecture (high level)
+## Architecture
 
-```text
-Client  →  API (REST)  →  PostgreSQL
-                ↓
-            Kafka (jobs topic)
-                ↓
-         Worker service  →  EMAIL / REPORT / EXTERNAL handlers
+```mermaid
+flowchart LR
+  C[Client] --> API[API Service]
+  API --> DB[(PostgreSQL)]
+  API --> K[(Kafka jobs topic)]
+  K --> W[Worker Service]
+  W --> DB
+  W --> EXT[External Service]
+  EXT -->|POST /jobs/callback| API
+  API --> DLQ[(Kafka jobs-dlq topic)]
 ```
 
 The API persists jobs and enqueues work **only after** the row is `QUEUED`, so the worker never processes a Kafka message for a job that is still `PENDING` in the database.
+
+## Design Decisions & Tradeoffs
+
+### Database vs Kafka ordering
+
+Jobs are persisted and moved to `QUEUED` before publishing to Kafka.
+
+**Why:**
+- Prevents workers from consuming jobs that do not yet exist in the database
+- Avoids phantom execution scenarios
+
+**Tradeoff:**
+- Does not guarantee atomicity between DB and Kafka
+- In production systems, this is often solved using the Outbox Pattern
+
+### Shared database between services
+
+Both API and worker services use the same PostgreSQL database.
+
+**Why:**
+- Simplifies coordination and reduces infrastructure complexity
+- Suitable for learning and demonstration
+
+**Tradeoff:**
+- Tighter coupling between services
+- Production systems often use separate databases per service
+
+### External job completion via callback
+
+EXTERNAL jobs remain in `RUNNING` until a callback is received.
+
+**Why:**
+- Models real-world async workflows (for example third-party processing)
+- Avoids blocking the worker thread
+
+**Tradeoff:**
+- Requires timeout handling for reliability
+- Requires secure callback validation
+
+## Failure Scenarios
+
+### Worker crashes during execution
+
+- Job can remain in `RUNNING`
+- Watchdog detects stale jobs using `running_started_at`
+- Job is re-queued (if retries remain) or marked `FAILED`
+
+### External service never responds
+
+- Job remains in `RUNNING`
+- Watchdog triggers retry after timeout
+- After retry limit is exceeded, job is marked `FAILED` and published to DLQ
+
+### Kafka message delivered multiple times
+
+- Worker checks current job status before execution
+- Only `QUEUED` jobs are processed, which limits duplicate processing
+
+### Callback forgery attempt
+
+- Optional `X-Callback-Secret` is validated
+- Invalid requests are rejected
+
+## Consistency Model
+
+The system follows an **at-least-once processing model**:
+
+- Kafka may deliver messages more than once
+- Workers reduce duplicate effects by checking persisted job state before execution
+- External integrations may be retried, so partner endpoints should be idempotent
 
 ## Tech stack
 
