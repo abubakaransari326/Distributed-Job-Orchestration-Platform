@@ -8,7 +8,7 @@ A learning-oriented backend that models how SaaS-style platforms run **asynchron
 - **Job types** — `EMAIL` and `REPORT` (handled inside the worker), `EXTERNAL` (outbound HTTP to a partner URL, then completion via `POST /jobs/callback`).
 - **API service** — Create jobs, read status, retry failed jobs, accept external callbacks.
 - **Worker service** — Kafka consumer; claims `QUEUED` jobs, runs handlers, writes status back to the **same** Postgres database as the API.
-- **Kafka** — Work is published to the `jobs` topic (`jobs-dlq` is reserved for future dead-letter use).
+- **Kafka** — Work is published to the `jobs` topic; terminal timeout failures publish minimal messages to `jobs-dlq` for audit.
 - **PostgreSQL** — Single source of truth for job rows; schema owned by **Flyway** in `api-service` (worker validates only).
 - **Docker Compose** — Local Postgres (host **5433**), ZooKeeper, and Kafka.
 
@@ -133,6 +133,11 @@ bash scripts/e2e-smoke.sh
 | `MAX_WAIT_SEC`  | Poll timeout per step (default `60`) |
 | `WEBHOOK_URL`   | URL the worker POSTs to for `EXTERNAL` jobs (default `https://httpbin.org/post`; worker needs outbound HTTPS) |
 | `CALLBACK_SECRET` | If set on the API (`job.callback.secret`), export the same value so `/jobs/callback` succeeds |
+| `WATCHDOG_TEST` | Optional timeout scenario (`1` to enable). Requires API `job.external.running-timeout` small enough for smoke runtime |
+| `WATCHDOG_WAIT_SEC` | Max wait for watchdog retry increment in optional scenario (default `90`) |
+| `DLQ_TEST` | Optional DLQ scenario (`1` to enable). Requires API with short timeout and low retry budget to force terminal timeout quickly |
+| `DLQ_WAIT_SEC` | Max wait for the DLQ scenario job to reach `FAILED` (default `90`) |
+| `KAFKA_CONTAINER` | Kafka container name for optional DLQ check (default `djop-kafka`) |
 
 The script runs **EMAIL**, **REPORT**, **EXTERNAL** (callback `COMPLETED`), and **EXTERNAL** (callback `FAILED`).
 
@@ -141,8 +146,9 @@ The script runs **EMAIL**, **REPORT**, **EXTERNAL** (callback `COMPLETED`), and 
 | Method | Path | Purpose |
 |--------|------|---------|
 | `POST` | `/jobs` | Create job: persist `PENDING` → `QUEUED`, **then** publish to Kafka |
+| `GET` | `/jobs` | List jobs (optional `status`, `type`; Spring Data `page`, `size`, `sort`; `size` capped at 100) |
 | `GET` | `/jobs/{id}` | Read job by UUID |
-| `POST` | `/jobs/{id}/retry` | Re-queue a **failed** job (increments retries, publishes after `QUEUED` is saved) |
+| `POST` | `/jobs/{id}/retry` | Re-queue a **failed** job when `retries < job.retry.max` (increments retries, publishes after `QUEUED` is saved; returns `409` when retry budget is exhausted) |
 | `POST` | `/jobs/callback` | Partner completion for **EXTERNAL** jobs in **RUNNING** (`COMPLETED` or `FAILED`) |
 
 If `job.callback.secret` is set, send header `X-Callback-Secret` on `/jobs/callback`.
@@ -151,8 +157,10 @@ If `job.callback.secret` is set, send header `X-Callback-Secret` on `/jobs/callb
 
 | Location | Notes |
 |----------|--------|
-| `api-service/src/main/resources/application.yml` | Datasource, Kafka producer, `job.callback.secret` |
+| `api-service/src/main/resources/application.yml` | Datasource, Kafka producer, `job.callback.secret`, `job.retry.max`, `job.external.running-timeout`, `job.watchdog.fixed-delay` (see `JobProperties`) |
 | `worker-service/src/main/resources/application.yml` | Datasource, Kafka consumer, webhook timeouts |
+
+`jobs.running_started_at` is set when a worker claims a job (`RUNNING`) and cleared when the job leaves `RUNNING`; it supports EXTERNAL timeout scans and listing indexes on `(status, type)`.
 
 Environment variables commonly mirror Docker Compose (`POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`, `CALLBACK_SECRET`).
 
@@ -162,13 +170,15 @@ Kafka bootstrap defaults to `localhost:9092` for local Compose.
 
 Flyway SQL lives under `api-service/src/main/resources/db/migration/`. Hibernate uses **validate**; DDL is not auto-generated in production paths.
 
+`jobs-dlq` receives minimal dead-letter messages when EXTERNAL timeout handling reaches terminal failure due to retry budget exhaustion; `api-service` includes a log consumer (`JobDlqListener`) for audit visibility.
+
 ## Logging
 
 `com.distributedjob` is set to **DEBUG** in the bundled `application.yml` files for easier local tracing; tighten per package as needed.
 
 ## Roadmap
 
-- **Worker hardening** — DLQ publishing, richer error/detail in DB, timeouts/retries policy for `EXTERNAL`
+- **Worker hardening** — richer failure detail in DB and stronger idempotency guarantees for repeated EXTERNAL webhook attempts
 - **Optional** — Metrics, Redis, dashboard UI
 
 ## License

@@ -6,6 +6,7 @@ import com.distributedjob.common.JobType;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ObjectNode;
+import java.time.Instant;
 import java.util.Iterator;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -52,6 +53,7 @@ public class JobExecutionService {
         }
 
         job.setStatus(JobStatus.RUNNING);
+        job.setRunningStartedAt(Instant.now());
         jobRepository.save(job);
         log.info("Job claimed jobId={} type={}", job.getId(), job.getType());
 
@@ -64,6 +66,10 @@ public class JobExecutionService {
         } catch (Exception e) {
             log.error("Job execution error jobId={} type={}", job.getId(), job.getType(), e);
             job.setStatus(JobStatus.FAILED);
+        }
+
+        if (job.getStatus() != JobStatus.RUNNING) {
+            job.setRunningStartedAt(null);
         }
 
         jobRepository.save(job);

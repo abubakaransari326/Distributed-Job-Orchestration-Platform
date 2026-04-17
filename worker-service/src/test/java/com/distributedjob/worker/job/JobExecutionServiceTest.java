@@ -20,6 +20,8 @@ import org.springframework.web.client.RestTemplate;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -65,6 +67,7 @@ class JobExecutionServiceTest {
         service.process(new JobMessage(id, JobType.EMAIL, job.getPayloadJson()));
 
         assertEquals(JobStatus.COMPLETED, job.getStatus());
+        assertNull(job.getRunningStartedAt());
         verify(jobRepository, times(2)).save(job);
     }
 
@@ -77,6 +80,7 @@ class JobExecutionServiceTest {
         service.process(new JobMessage(id, JobType.EMAIL, job.getPayloadJson()));
 
         assertEquals(JobStatus.FAILED, job.getStatus());
+        assertNull(job.getRunningStartedAt());
         verify(jobRepository, times(2)).save(job);
     }
 
@@ -89,6 +93,7 @@ class JobExecutionServiceTest {
         service.process(new JobMessage(id, JobType.REPORT, job.getPayloadJson()));
 
         assertEquals(JobStatus.COMPLETED, job.getStatus());
+        assertNull(job.getRunningStartedAt());
         verify(jobRepository, times(2)).save(job);
     }
 
@@ -108,6 +113,7 @@ class JobExecutionServiceTest {
         svc.process(new JobMessage(id, JobType.EXTERNAL, job.getPayloadJson()));
 
         assertEquals(JobStatus.RUNNING, job.getStatus());
+        assertNotNull(job.getRunningStartedAt());
         verify(jobRepository, times(2)).save(job);
         server.verify();
     }
@@ -128,6 +134,7 @@ class JobExecutionServiceTest {
         svc.process(new JobMessage(id, JobType.EXTERNAL, job.getPayloadJson()));
 
         assertEquals(JobStatus.FAILED, job.getStatus());
+        assertNull(job.getRunningStartedAt());
         verify(jobRepository, times(2)).save(job);
         server.verify();
     }
@@ -150,6 +157,7 @@ class JobExecutionServiceTest {
         svc.process(new JobMessage(id, JobType.EXTERNAL, job.getPayloadJson()));
 
         assertEquals(JobStatus.FAILED, job.getStatus());
+        assertNull(job.getRunningStartedAt());
         verify(jobRepository, times(2)).save(job);
         server.verify();
     }

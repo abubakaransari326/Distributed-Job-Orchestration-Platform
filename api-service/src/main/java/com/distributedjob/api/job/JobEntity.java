@@ -40,6 +40,12 @@ public class JobEntity {
     @Column(name = "updated_at", nullable = false)
     private Instant updatedAt;
 
+    /**
+     * Set when status becomes RUNNING (worker); cleared when leaving RUNNING. Used for EXTERNAL timeout scans.
+     */
+    @Column(name = "running_started_at")
+    private Instant runningStartedAt;
+
     public UUID getId() {
         return id;
     }
@@ -86,6 +92,14 @@ public class JobEntity {
 
     public Instant getUpdatedAt() {
         return updatedAt;
+    }
+
+    public Instant getRunningStartedAt() {
+        return runningStartedAt;
+    }
+
+    public void setRunningStartedAt(Instant runningStartedAt) {
+        this.runningStartedAt = runningStartedAt;
     }
 
     @PrePersist

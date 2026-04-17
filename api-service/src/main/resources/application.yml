@@ -27,6 +27,15 @@ spring:
       value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
       properties:
         spring.json.add.type.headers: false
+    consumer:
+      group-id: api-service
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.distributedjob.common
+        spring.json.use.type.headers: false
+        spring.json.value.default.type: com.distributedjob.common.JobDlqMessage
 
 server:
   port: 8080
@@ -45,3 +54,12 @@ logging:
 job:
   callback:
     secret: ${CALLBACK_SECRET:}
+  retry:
+    # No manual retry or timeout requeue when jobs.retries >= max (recovery budget).
+    max: 3
+  external:
+    # How long an EXTERNAL job may stay RUNNING before the watchdog treats it as stuck (scheduler uses this).
+    running-timeout: 30m
+  watchdog:
+    # Interval between EXTERNAL RUNNING timeout scans (milliseconds for @Scheduled).
+    fixed-delay: 60000
